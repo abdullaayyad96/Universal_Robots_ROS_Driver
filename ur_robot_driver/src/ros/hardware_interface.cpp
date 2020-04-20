@@ -73,6 +73,8 @@ bool HardwareInterface::init(ros::NodeHandle& root_nh, ros::NodeHandle& robot_hw
   // The driver will offer an interface to receive the program's URScript on this port.
   int script_sender_port = robot_hw_nh.param("script_sender_port", 50002);
 
+  // When the robot's URDF is being loaded with a prefix, we need to know it here, as well, in order
+  // to publish correct frame names for frames reported by the robot directly.
   robot_hw_nh.param<std::string>("tf_prefix", tf_prefix_, "");
 
   // Path to the urscript code that will be sent to the robot.
@@ -106,9 +108,9 @@ bool HardwareInterface::init(ros::NodeHandle& root_nh, ros::NodeHandle& robot_hw
     return false;
   }
 
-  // Enables non_blocking_read mode. Useful when used with combined_robot_hw. Disables error
-  // generated when read returns without any data, sets the read timeout to zero, and
-  // synchronises read/write operations.
+  // Enables non_blocking_read mode. Should only be used with combined_robot_hw. Disables error generated when read
+  // returns without any data, sets the read timeout to zero, and synchronises read/write operations. Enabling this when
+  // not used with combined_robot_hw can suppress important errors and affect real-time performance.
   robot_hw_nh.param("non_blocking_read", non_blocking_read_, false);
 
   // Specify gain for servoing to position in joint space.
@@ -464,6 +466,14 @@ void HardwareInterface::read(const ros::Time& time, const ros::Duration& period)
   }
   else
   {
+    // If reading from RTDE fails, this means that we lost RTDE connection (or that our connection
+    // is not reliable). If we ignore this, the joint_state_controller will continue to publish old
+    // data (e.g. if we unplug the cable from the robot).  However, this also means that any
+    // trajectory execution will be aborted from time to time if the connection to the robot isn't
+    // reliable.
+    // TODO: This doesn't seem too bad currently, but we have to keep this in mind, when we
+    // implement trajectory execution strategies that require a less reliable network connection.
+    controller_reset_necessary_ = true;
     if (!non_blocking_read_)
     {
       ROS_ERROR("Could not get fresh data package from robot");
@@ -518,27 +528,53 @@ bool HardwareInterface::prepareSwitch(const std::list<hardware_interface::Contro
 void HardwareInterface::doSwitch(const std::list<hardware_interface::ControllerInfo>& start_list,
                                  const std::list<hardware_interface::ControllerInfo>& stop_list)
 {
-  position_controller_running_ = false;
-  velocity_controller_running_ = false;
+  for (auto& controller_it : stop_list)
+  {
+    for (auto& resource_it : controller_it.claimed_resources)
+    {
+      if (checkControllerClaims(resource_it.resources))
+      {
+        if (resource_it.hardware_interface == "ur_controllers::ScaledPositionJointInterface")
+        {
+          position_controller_running_ = false;
+        }
+        if (resource_it.hardware_interface == "hardware_interface::PositionJointInterface")
+        {
+          position_controller_running_ = false;
+        }
+        if (resource_it.hardware_interface == "ur_controllers::ScaledVelocityJointInterface")
+        {
+          velocity_controller_running_ = false;
+        }
+        if (resource_it.hardware_interface == "hardware_interface::VelocityJointInterface")
+        {
+          velocity_controller_running_ = false;
+        }
+      }
+    }
+  }
   for (auto& controller_it : start_list)
   {
     for (auto& resource_it : controller_it.claimed_resources)
     {
-      if (resource_it.hardware_interface == "ur_controllers::ScaledPositionJointInterface")
+      if (checkControllerClaims(resource_it.resources))
       {
-        position_controller_running_ = true;
-      }
-      if (resource_it.hardware_interface == "hardware_interface::PositionJointInterface")
-      {
-        position_controller_running_ = true;
-      }
-      if (resource_it.hardware_interface == "ur_controllers::ScaledVelocityJointInterface")
-      {
-        velocity_controller_running_ = true;
-      }
-      if (resource_it.hardware_interface == "hardware_interface::VelocityJointInterface")
-      {
-        velocity_controller_running_ = true;
+        if (resource_it.hardware_interface == "ur_controllers::ScaledPositionJointInterface")
+        {
+          position_controller_running_ = true;
+        }
+        if (resource_it.hardware_interface == "hardware_interface::PositionJointInterface")
+        {
+          position_controller_running_ = true;
+        }
+        if (resource_it.hardware_interface == "ur_controllers::ScaledVelocityJointInterface")
+        {
+          velocity_controller_running_ = true;
+        }
+        if (resource_it.hardware_interface == "hardware_interface::VelocityJointInterface")
+        {
+          velocity_controller_running_ = true;
+        }
       }
     }
   }
@@ -667,7 +703,7 @@ void HardwareInterface::publishToolData()
       tool_data_pub_->msg_.analog_input_range2 = tool_analog_input_types_[0];
       tool_data_pub_->msg_.analog_input_range3 = tool_analog_input_types_[1];
       tool_data_pub_->msg_.analog_input2 = tool_analog_input_[0];
-      tool_data_pub_->msg_.analog_input2 = tool_analog_input_[1];
+      tool_data_pub_->msg_.analog_input3 = tool_analog_input_[1];
       tool_data_pub_->msg_.tool_output_voltage = tool_output_voltage_;
       tool_data_pub_->msg_.tool_current = tool_output_current_;
       tool_data_pub_->msg_.tool_temperature = tool_temperature_;
@@ -821,6 +857,21 @@ void HardwareInterface::publishRobotAndSafetyMode()
       }
     }
   }
+}
+
+bool HardwareInterface::checkControllerClaims(const std::set<std::string>& claimed_resources)
+{
+  for (const std::string& it : joint_names_)
+  {
+    for (const std::string& jt : claimed_resources)
+    {
+      if (it == jt)
+      {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 }  // namespace ur_driver
 
