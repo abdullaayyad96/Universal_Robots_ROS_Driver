@@ -29,7 +29,7 @@
   <group if="$(arg load_urdf)">
     <include file="$(arg robot_description_file)">
       <arg name="limited" value="$(arg limited)"/>
-      <arg name="kinematics_config" value="$(arg kinematics_config)"/>
+      <arg name="kinematics_config" value="$(find ur_description)/config/$(arg kinematics_config)"/>
     </include>
   </group>
 
@@ -37,6 +37,8 @@
   <group if="$(arg publish_robot_state)">
     <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher"/>
   </group>  
+
+  <node name="ee_pose_publisher" pkg="ur_robot_driver" type="ee_pose_publisher.py"/>
 
   <include file="$(find ur_robot_driver)/launch/ur_control.launch">
     <arg name="debug" value="$(arg debug)"/>
